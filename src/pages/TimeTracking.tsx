@@ -670,7 +670,7 @@ const TimeTracking = () => {
                     {getWeeklyTargetHours()}h Wochensoll
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    Mo-Do: 8,5h • Fr: 5h (inkl. 0,5h Überstunde/ZA)
+                    Mo-Fr: 8h (08:00 – 17:00, 1h Pause)
                   </span>
                 </div>
               </div>
@@ -1063,8 +1063,7 @@ const TimeTracking = () => {
                       const absenceDateObj = new Date(absenceData.date);
                       const dayOfWeek = absenceDateObj.getDay();
                       if (dayOfWeek === 0 || dayOfWeek === 6) return "Wochenende: 0 Stunden";
-                      if (dayOfWeek === 5) return "Freitag: 4,5 Stunden (07:00 - 12:00)";
-                      return "Mo-Do: 8,5 Stunden (07:00 - 16:00, 30min Pause)";
+                      return "Mo-Fr: 8 Stunden (08:00 - 17:00, 1h Pause)";
                     })()}
                   </div>
                   <div className="pt-2 border-t">

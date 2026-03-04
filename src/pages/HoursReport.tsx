@@ -175,6 +175,26 @@ export default function HoursReport() {
     return Math.max(0, totalHours - normalHours);
   };
 
+  // Deduplicate overlapping time entries for a day (avoids double-counting from Regieberichte)
+  const deduplicateDayEntries = (entries: TimeEntry[]): TimeEntry[] => {
+    if (entries.length <= 1) return entries;
+    const toMin = (t: string) => {
+      const [h, m] = (t || "00:00").substring(0, 5).split(":").map(Number);
+      return h * 60 + m;
+    };
+    const sorted = [...entries].sort((a, b) =>
+      (a.start_time || "").localeCompare(b.start_time || "")
+    );
+    const result: TimeEntry[] = [];
+    for (const entry of sorted) {
+      const s = toMin(entry.start_time);
+      const e = toMin(entry.end_time);
+      const overlaps = result.some(r => s < toMin(r.end_time) && e > toMin(r.start_time));
+      if (!overlaps) result.push(entry);
+    }
+    return result;
+  };
+
   const calculateLunchBreak = (entry: TimeEntry) => {
     // Prioritize new pause_start/pause_end fields if available
     if (entry.pause_start && entry.pause_end) {
@@ -198,8 +218,18 @@ export default function HoursReport() {
   };
 
   const monthDays = generateMonthDays();
-  const totalHours = timeEntries.reduce((sum, entry) => sum + entry.stunden, 0);
-  const totalOvertime = timeEntries.reduce((sum, entry) => {
+
+  // Group entries by day and deduplicate overlapping ones before summing
+  const uniqueEntriesByDay = Object.values(
+    timeEntries.reduce((acc, entry) => {
+      if (!acc[entry.datum]) acc[entry.datum] = [];
+      acc[entry.datum].push(entry);
+      return acc;
+    }, {} as Record<string, TimeEntry[]>)
+  ).flatMap((dayEntries) => deduplicateDayEntries(dayEntries));
+
+  const totalHours = uniqueEntriesByDay.reduce((sum, entry) => sum + entry.stunden, 0);
+  const totalOvertime = uniqueEntriesByDay.reduce((sum, entry) => {
     const entryDate = parseISO(entry.datum);
     return sum + calculateOvertime(entryDate, entry.stunden);
   }, 0);
@@ -266,11 +296,13 @@ export default function HoursReport() {
       const dayEntries = timeEntries.filter((e) => isSameDay(parseISO(e.datum), dayDate));
       
 
-      if (dayEntries.length === 0) {
+      const uniqueDayEntries = deduplicateDayEntries(dayEntries);
+
+      if (uniqueDayEntries.length === 0) {
         worksheetData.push([day, "", "", "", "", "", "", "", "", "", "", ""]);
       } else {
-        // Alle Einträge des Tages hinzufügen
-        dayEntries.forEach((entry, entryIndex) => {
+        // Alle (deduplizierten) Einträge des Tages hinzufügen
+        uniqueDayEntries.forEach((entry, entryIndex) => {
           const lunchBreak = calculateLunchBreak(entry);
           const project = projects[entry.project_id];
           
@@ -324,18 +356,17 @@ export default function HoursReport() {
               plz,
             ]);
           } else {
-            // Export OHNE Überstunden: Regelarbeitszeiten verwenden
+            // Export OHNE Überstunden: Regelarbeitszeiten Mo-Fr 08:00-17:00 verwenden
             const dayOfWeek = dayDate.getDay();
             const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-            const isFridayCheck = dayOfWeek === 5;
-            const regelarbeitszeit = isWeekend ? 0 : (isFridayCheck ? 5 : 8.5);
-            
-            // Regelarbeitszeiten für Zeiten
-            const regelStart = "07:30";
-            const regelMorningEnd = isFridayCheck ? "12:30" : "12:00";
-            const regelPause = isFridayCheck ? "" : "12:00 - 13:00";
-            const regelAfternoonStart = isFridayCheck ? "" : "13:00";
-            const regelEnd = isFridayCheck ? "12:30" : "17:00";
+            const regelarbeitszeit = isWeekend ? 0 : 8;
+
+            // Regelarbeitszeiten: Mo-Fr 08:00-12:00, 13:00-17:00
+            const regelStart = isWeekend ? "" : "08:00";
+            const regelMorningEnd = isWeekend ? "" : "12:00";
+            const regelPause = isWeekend ? "" : "12:00 - 13:00";
+            const regelAfternoonStart = isWeekend ? "" : "13:00";
+            const regelEnd = isWeekend ? "" : "17:00";
             
             worksheetData.push([
               displayDay,
@@ -355,19 +386,14 @@ export default function HoursReport() {
         });
 
         // Tagessumme wenn mehrere Einträge am Tag
-        if (dayEntries.length > 1) {
-          const dayTotalHours = dayEntries.reduce((sum, e) => sum + e.stunden, 0);
-          const dayTotalOvertime = dayEntries.reduce((sum, e) => sum + calculateOvertime(dayDate, e.stunden), 0);
+        if (uniqueDayEntries.length > 1) {
+          const dayTotalHours = uniqueDayEntries.reduce((sum, e) => sum + e.stunden, 0);
+          const dayTotalOvertime = calculateOvertime(dayDate, dayTotalHours);
           if (includeOvertime) {
             worksheetData.push(["", "", "", "", "", "Tagessumme:", dayTotalHours.toFixed(2), dayTotalOvertime > 0 ? dayTotalOvertime.toFixed(2) : "", "", "", "", ""]);
           } else {
-            // Tagessumme mit Regelarbeitszeit
-            const dayOfWeek = dayDate.getDay();
-            const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-            const isFridayCheck = dayOfWeek === 5;
-            const regelarbeitszeitTag = isWeekend ? 0 : (isFridayCheck ? 5 : 8.5);
-            // Bei mehreren Einträgen pro Tag: Regelarbeitszeit * Anzahl Einträge oder einfach die Tagessumme der Regelarbeitszeit
-            worksheetData.push(["", "", "", "", "", "Tagessumme:", (regelarbeitszeitTag * dayEntries.length).toFixed(2), "", "", "", "", ""]);
+            const regelarbeitszeitTag = (dayDate.getDay() === 0 || dayDate.getDay() === 6) ? 0 : 8;
+            worksheetData.push(["", "", "", "", "", "Tagessumme:", regelarbeitszeitTag.toFixed(2), "", "", "", "", ""]);
           }
         }
       }
@@ -382,9 +408,7 @@ export default function HoursReport() {
         if (dayEntries.length > 0) {
           const dayOfWeek = dayDate.getDay();
           const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-          const isFridayCheck = dayOfWeek === 5;
-          const regelarbeitszeit = isWeekend ? 0 : (isFridayCheck ? 5 : 8.5);
-          summe += regelarbeitszeit * dayEntries.length;
+          summe += isWeekend ? 0 : 8;
         }
       }
       return summe;
