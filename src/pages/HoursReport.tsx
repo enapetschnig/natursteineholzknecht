@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "@/hooks/use-toast";
-import { ArrowLeft, Download, FileSpreadsheet, Building2, Hammer, ChevronDown } from "lucide-react";
+import { ArrowLeft, Download, FileSpreadsheet, Building2, Hammer, ChevronDown, AlertTriangle } from "lucide-react";
 import { format, isSameDay, parseISO } from "date-fns";
 import { de } from "date-fns/locale";
 import * as XLSX from "xlsx-js-style";
@@ -175,13 +175,14 @@ export default function HoursReport() {
     return Math.max(0, totalHours - normalHours);
   };
 
+  const toMin = (t: string) => {
+    const [h, m] = (t || "00:00").substring(0, 5).split(":").map(Number);
+    return h * 60 + m;
+  };
+
   // Deduplicate overlapping time entries for a day (avoids double-counting from Regieberichte)
   const deduplicateDayEntries = (entries: TimeEntry[]): TimeEntry[] => {
     if (entries.length <= 1) return entries;
-    const toMin = (t: string) => {
-      const [h, m] = (t || "00:00").substring(0, 5).split(":").map(Number);
-      return h * 60 + m;
-    };
     const sorted = [...entries].sort((a, b) =>
       (a.start_time || "").localeCompare(b.start_time || "")
     );
@@ -193,6 +194,27 @@ export default function HoursReport() {
       if (!overlaps) result.push(entry);
     }
     return result;
+  };
+
+  // Returns a Set of entry IDs that are overlapping (= removed by deduplication)
+  const getOverlappingEntryIds = (entries: TimeEntry[]): Set<string> => {
+    if (entries.length <= 1) return new Set();
+    const sorted = [...entries].sort((a, b) =>
+      (a.start_time || "").localeCompare(b.start_time || "")
+    );
+    const kept: TimeEntry[] = [];
+    const overlapping = new Set<string>();
+    for (const entry of sorted) {
+      const s = toMin(entry.start_time);
+      const e = toMin(entry.end_time);
+      const overlapsKept = kept.some(r => s < toMin(r.end_time) && e > toMin(r.start_time));
+      if (overlapsKept) {
+        overlapping.add(entry.id);
+      } else {
+        kept.push(entry);
+      }
+    }
+    return overlapping;
   };
 
   const calculateLunchBreak = (entry: TimeEntry) => {
@@ -689,7 +711,9 @@ export default function HoursReport() {
                           monthDays.map((day) => {
                             // Finde alle Einträge für diesen Tag
                             const dayEntries = timeEntries.filter((e) => isSameDay(parseISO(e.datum), day.date));
-                            const dayTotalHours = dayEntries.reduce((sum, e) => sum + e.stunden, 0);
+                            const overlappingIds = getOverlappingEntryIds(dayEntries);
+                            const uniqueDayEntries = deduplicateDayEntries(dayEntries);
+                            const dayTotalHours = uniqueDayEntries.reduce((sum, e) => sum + e.stunden, 0);
                             const hasMultipleEntries = dayEntries.length > 1;
 
                             if (dayEntries.length === 0) {
@@ -713,7 +737,8 @@ export default function HoursReport() {
 
                             return dayEntries.map((entry, entryIndex) => {
                               const lunchBreak = calculateLunchBreak(entry);
-                              const overtime = calculateOvertime(day.date, entry.stunden);
+                              const isOverlapping = overlappingIds.has(entry.id);
+                              const overtime = isOverlapping ? 0 : calculateOvertime(day.date, entry.stunden);
                               const project = projects[entry.project_id];
                               const ortIcon = entry.location_type === "baustelle" ? "🏗️" : entry.location_type === "werkstatt" ? "🔧" : "";
                               const ortText = entry.location_type === "baustelle" ? "Baustelle" : entry.location_type === "werkstatt" ? "Werkstatt" : "";
@@ -728,7 +753,8 @@ export default function HoursReport() {
                                   key={entry.id}
                                   className={cn(
                                     day.isWeekend && "bg-muted/30",
-                                    hasMultipleEntries && !isLastEntry && "border-b-0"
+                                    hasMultipleEntries && !isLastEntry && "border-b-0",
+                                    isOverlapping && "bg-orange-50/60"
                                   )}
                                 >
                                   <TableCell className="font-medium">
@@ -745,7 +771,7 @@ export default function HoursReport() {
                                     <div className="flex items-center gap-1">
                                       <span>{entry.start_time?.substring(0, 5)}</span>
                                       <span>-</span>
-                                      <span>{day.isFriday ? "12:30" : "12:00"}</span>
+                                      <span>{lunchBreak?.start || entry.end_time?.substring(0, 5)}</span>
                                     </div>
                                   </TableCell>
                                   <TableCell>
@@ -763,11 +789,25 @@ export default function HoursReport() {
                                     )}
                                   </TableCell>
                                   <TableCell className="text-right font-medium">
-                                    {entry.stunden.toFixed(2)} h
-                                    {hasMultipleEntries && isLastEntry && (
-                                      <div className="text-xs text-primary font-bold mt-1">
-                                        Σ {dayTotalHours.toFixed(2)} h
+                                    {isOverlapping ? (
+                                      <div className="flex flex-col items-end gap-0.5">
+                                        <span className="line-through text-muted-foreground text-xs">
+                                          {entry.stunden.toFixed(2)} h
+                                        </span>
+                                        <span className="flex items-center gap-1 text-orange-600 text-xs font-semibold">
+                                          <AlertTriangle className="w-3 h-3" />
+                                          Doppelbuchung
+                                        </span>
                                       </div>
+                                    ) : (
+                                      <>
+                                        {entry.stunden.toFixed(2)} h
+                                        {hasMultipleEntries && isLastEntry && (
+                                          <div className="text-xs text-primary font-bold mt-1">
+                                            Σ {dayTotalHours.toFixed(2)} h
+                                          </div>
+                                        )}
+                                      </>
                                     )}
                                   </TableCell>
                                   <TableCell className="text-right">
