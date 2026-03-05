@@ -176,8 +176,13 @@ export const SignatureDialog = ({
       });
 
       if (sendError) {
-        const detail = (sendError as { message?: string })?.message || String(sendError);
-        console.error("Email send error:", sendError);
+        let detail = (sendError as { message?: string })?.message || String(sendError);
+        try {
+          // FunctionsHttpError stores the actual response in .context
+          const body = await (sendError as { context?: Response })?.context?.json();
+          if (body?.error) detail = body.error;
+        } catch { /* ignore */ }
+        console.error("Email send error:", sendError, "Detail:", detail);
         // Still mark as success since signature was saved
         toast({
           title: "Unterschrift gespeichert",
